@@ -1,0 +1,7 @@
+pydantic
+fastapi
+minio
+weaviate
+unstructured
+langchain[all]
+langserve[all]
