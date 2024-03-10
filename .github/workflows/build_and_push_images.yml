@@ -33,7 +33,7 @@ jobs:
     - name: Build and push Docker image
       uses: docker/build-push-action@v3
       with:
-        context: .
+        context: ./app
         push: true
         tags: |
           cdaprod/cda-minio-control:latest
