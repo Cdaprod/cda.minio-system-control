@@ -125,6 +125,13 @@ class MinIOSystemOrchestrator:
 
 app = FastAPI()
 
+@app.get("/")
+def read_root(settings: Settings = Depends(get_settings)):
+    return {"Hello": "World", "MinIO Endpoint": settings.minio_endpoint}
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
 @app.post("/execute/{bucket_name}/{script_name}")
 async def execute_script(bucket_name: str, script_name: str):
     orchestrator = MinIOSystemOrchestrator(

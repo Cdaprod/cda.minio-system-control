@@ -1,7 +1,9 @@
-pydantic
 fastapi
+uvicorn
 minio
-weaviate
+requests
 unstructured
-langchain[all]
-langserve[all]
+docker
+openai
+langchain
+weaviate-client
