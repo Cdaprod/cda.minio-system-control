@@ -1,0 +1,425 @@
+import asyncio
+import os
+import re
+import io
+import tempfile
+import uuid
+import openai
+from typing import List, Optional, Dict
+from concurrent.futures import ThreadPoolExecutor
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, HttpUrl
+from minio import Minio
+import requests
+from unstructured.partition.auto import partition
+from docker import from_env as docker_from_env
+from langchain.chat_models import ChatOpenAI
+from langchain.agents import tool, AgentExecutor
+from langchain.agents import AgentType
+from langchain.memory import ConversationBufferMemory
+from langchain.callbacks.base import BaseCallbackManager
+from langchain.agents import initialize_agent
+from langchain.prompts import ChatPromptTemplate
+import uvicorn
+from minio.error import S3Error
+import weaviate
+import json
+
+
+openai_api_key = os.getenv("OPENAI_API_KEY")
+if openai_api_key is None:
+  raise ValueError("OPENAI_API_KEY environment variable is not set.")
+
+#llm = ChatOpenAI(api_key=openai_api_key)
+llm = ChatOpenAI(api_key=openai_api_key, model_name="gpt-3.5-turbo")
+
+class MinIOConfig(BaseModel):
+    endpoint: str
+    access_key: str
+    secret_key: str
+    secure: bool = True
+
+class DockerConfig(BaseModel):
+    image: str
+    command: str
+    volumes: dict
+    detach: bool = True
+    remove: bool = True
+
+class URLItem(BaseModel):
+    url: HttpUrl
+
+class Document(BaseModel):
+    source: str
+    content: str
+
+class ScriptExecutionRequest(BaseModel):
+    bucket_name: str
+    script_name: str
+
+class LangChainInput(BaseModel):
+    input_text: str
+
+class ClientConfig(BaseModel):
+    minio_endpoint: str = "play.min.io:9000"
+    minio_access_key: str = "minioadmin"
+    minio_secret_key: str = "minioadmin"
+    weaviate_endpoint: str = "http://localhost:8080"
+
+class MinioClientModel(BaseModel):
+    config: ClientConfig
+
+    def get_client(self) -> Minio:
+        return Minio(
+            self.config.minio_endpoint,
+            access_key=self.config.minio_access_key,
+            secret_key=self.config.minio_secret_key,
+            secure=True  # Set to False if you are not using https
+        )
+
+class WeaviateClientModel(BaseModel):
+    config: ClientConfig
+
+    def get_client(self) -> weaviate.Client:
+        return weaviate.Client(
+            url=self.config.weaviate_endpoint,
+            timeout_config=(5, 15)
+        )
+
+class LangChainQueryModel(BaseModel):
+    query: str
+    context: Optional[Dict] = None
+
+class AgentActionModel(BaseModel):
+    action: str
+    parameters: Optional[Dict] = None
+
+def sanitize_url_to_object_name(url: str) -> str:
+    clean_url = re.sub(r'^https?://', '', url)
+    clean_url = re.sub(r'[^\w\-_\.]', '_', clean_url)
+    return clean_url[:250] + '.txt'
+
+def prepare_text_for_tokenization(text: str) -> str:
+    clean_text = re.sub(r'\s+', ' ', text).strip()
+    return clean_text
+
+class MinIOOperations:
+    def __init__(self, config: MinIOConfig):
+        self.client = Minio(config.endpoint, access_key=config.access_key, secret_key=config.secret_key, secure=config.secure)
+
+    async def store_object(self, bucket_name: str, object_name: str, file_path: str):
+        self.client.fput_object(bucket_name, object_name, file_path)
+
+    async def retrieve_object(self, bucket_name: str, object_name: str, file_path: str):
+        self.client.fget_object(bucket_name, object_name, file_path)
+
+class DockerOperations:
+    def __init__(self, config: DockerConfig):
+        self.client = docker_from_env()
+        self.config = config
+
+    async def execute_script(self, script_content: str):
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".py") as script_file:
+            script_file.write(script_content.encode())
+            script_path = script_file.name
+        container_name = f"script_execution_{uuid.uuid4()}"
+        container = self.client.containers.run(
+            image=self.config.image,
+            command=f"python {script_path}",
+            volumes=self.config.volumes,
+            detach=self.config.detach,
+            remove=self.config.remove,
+            name=container_name
+        )
+        return container_name
+
+class MinIOSystemOrchestrator:
+    def __init__(self, minio_config: MinIOConfig, docker_config: DockerConfig):
+        self.minio_ops = MinIOOperations(minio_config)
+        self.docker_ops = DockerOperations(docker_config)
+
+    async def execute_url_etl_pipeline(self, urls: List[URLItem]):
+        async with ThreadPoolExecutor() as executor:
+            loop = asyncio.get_running_loop()
+            tasks = [loop.run_in_executor(executor, self.process_url, url) for url in urls]
+            await asyncio.gather(*tasks)
+
+    def process_url(self, url_item: URLItem):
+        response = requests.get(url_item.url)
+        response.raise_for_status()
+        html_content = io.BytesIO(response.content)
+        elements = partition(file=html_content, content_type="text/html")
+        combined_text = "\n".join([e.text for e in elements if hasattr(e, 'text')])
+        combined_text = prepare_text_for_tokenization(combined_text)
+        object_name = sanitize_url_to_object_name(url_item.url)
+        with tempfile.NamedTemporaryFile(delete=False, mode="w", encoding="utf-8", suffix=".txt") as tmp_file:
+            tmp_file.write(combined_text)
+            tmp_file_path = tmp_file.name
+        asyncio.run(self.minio_ops.store_object("your_bucket_name", object_name, tmp_file_path))
+        os.remove(tmp_file_path)
+
+    async def execute_script_in_docker(self, execution_request: ScriptExecutionRequest):
+        response = self.minio_ops.client.get_object(execution_request.bucket_name, execution_request.script_name)
+        script_content = response.read().decode('utf-8')
+        container_name = await self.docker_ops.execute_script(script_content)
+        return {"message": "Execution started", "container_name": container_name}
+
+app = FastAPI()
+
+# Initialize Minio client
+minio_client = Minio(
+    os.getenv("MINIO_ENDPOINT", "play.min.io"),
+    access_key=os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
+    secret_key=os.getenv("MINIO_SECRET_KEY", "minioadmin"),
+    secure=True
+)
+
+@tool
+def create_bucket(bucket_name: str) -> str:
+    """
+    Creates a new bucket in Minio.
+
+    Args:
+        bucket_name (str): The name of the bucket to create.
+
+    Returns:
+        str: A message indicating the result of the bucket creation.
+    """
+    try:
+        minio_client.make_bucket(bucket_name)
+        return f"Bucket {bucket_name} created successfully."
+    except S3Error as e:
+        return f"Failed to create bucket {bucket_name}: {str(e)}"
+
+@tool
+def upload_file(bucket_name: str, file_path: str, object_name: str) -> str:
+    """
+    Uploads a file to a specified bucket in Minio.
+
+    Args:
+        bucket_name (str): The name of the bucket to upload the file to.
+        file_path (str): The path to the file to upload.
+        object_name (str): The name to give to the uploaded object.
+
+    Returns:
+        str: A message indicating the result of the file upload.
+    """
+    try:
+        minio_client.fput_object(bucket_name, object_name, file_path)
+        return f"File {file_path} uploaded as {object_name} in bucket {bucket_name}."
+    except S3Error as e:
+        return f"Failed to upload file {file_path} to bucket {bucket_name}: {str(e)}"
+
+@tool
+def list_buckets() -> str:
+    """
+    Lists all buckets in Minio.
+
+    Returns:
+        str: A message containing the list of buckets.
+    """
+    try:
+        buckets = minio_client.list_buckets()
+        bucket_list = [bucket.name for bucket in buckets]
+        return f"Buckets: {', '.join(bucket_list)}"
+    except S3Error as e:
+        return f"Failed to list buckets: {str(e)}"
+
+@tool
+def delete_file(bucket_name: str, object_name: str) -> str:
+    """
+    Deletes a specified file from a bucket in Minio.
+
+    Args:
+        bucket_name (str): The name of the bucket containing the file.
+        object_name (str): The name of the file to delete.
+
+    Returns:
+        str: A message indicating the result of the file deletion.
+    """
+    try:
+        minio_client.remove_object(bucket_name, object_name)
+        return f"File {object_name} deleted from bucket {bucket_name}."
+    except S3Error as e:
+        return f"Failed to delete file {object_name} from bucket {bucket_name}: {str(e)}"
+
+# Define LangChain prompts for MinIO operations
+minio_prompts = {
+    'create_bucket': ChatPromptTemplate.from_messages([
+        ("system", "You are a helpful MinIO assistant."),
+        ("human", "Create a new bucket named '{bucket_name}'.")
+    ]),
+    'upload_file': ChatPromptTemplate.from_messages([
+        ("system", "You are a helpful MinIO assistant."),
+        ("human", "Upload file '{file_path}' to bucket '{bucket_name}'.")
+    ]),
+    'list_buckets': ChatPromptTemplate.from_messages([
+        ("system", "You are a helpful MinIO assistant."),
+        ("human", "List all buckets.")
+    ]),
+    'delete_file': ChatPromptTemplate.from_messages([
+        ("system", "You are a helpful MinIO assistant."),
+        ("human", "Delete file '{object_name}' from bucket '{bucket_name}'.")
+    ])
+}
+
+# Define a prompt for Docker operations
+docker_prompts = {
+    'execute_script': ChatPromptTemplate.from_messages([
+        ("system", "You are a Docker operations assistant."),
+        ("human", "Execute script '{script_name}' using Docker image '{image}'.")
+    ])
+}
+
+# Rest of the code remains unchanged
+
+# ...
+
+
+
+
+def execute_langchain_query(query: str, context: Optional[Dict] = None) -> str:
+    """
+    Executes a query using LangChain and returns the response.
+
+    Args:
+        query (str): The query to be executed.
+        context (Optional[Dict], optional): Additional context for the query execution. Defaults to None.
+
+    Returns:
+        str: The result of the query execution.
+    """
+    # Placeholder for LangChain API endpoint
+    langchain_endpoint = "https://api.langchain.com/query"
+
+    # Prepare the payload
+    payload = LangChainQueryModel(query=query, context=context or {}).dict()
+
+    try:
+        # Execute the query
+        response = requests.post(langchain_endpoint, json=payload)
+
+        # Check for successful request
+        if response.status_code == 200:
+            # Assuming the response contains a JSON with a key 'result'
+            return response.json().get('result', 'No result found.')
+        else:
+            return f"LangChain query failed with status code {response.status_code}"
+    except Exception as e:
+        return f"Failed to execute LangChain query: {str(e)}"
+
+def execute_agent_action(action: str, parameters: Optional[Dict] = None) -> str:
+    """
+    Simulates an agent action execution based on the specified action and parameters.
+
+    Args:
+        action (str): The action to be executed by the agent.
+        parameters (Optional[Dict], optional): Parameters for the action execution. Defaults to None.
+
+    Returns:
+        str: A message indicating the result of the action execution.
+    """
+    # Simulate action processing
+    # In a real scenario, this function would interact with an agent control system
+    action_details = AgentActionModel(action=action, parameters=parameters or {})
+    print(f"Executing action: {action_details.action} with parameters: {json.dumps(action_details.parameters)}")
+
+    # Placeholder for action execution result
+    return f"Action '{action}' executed successfully."
+
+def hydrate_data(url: str, bucket_name: str, config: ClientConfig):
+    minio_client = MinioClientModel(config=config).get_client()
+    weaviate_client = WeaviateClientModel(config=config).get_client()
+
+    # Fetch the data
+    response = requests.get(url)
+    if response.status_code != 200:
+        print(f"Failed to fetch {url}")
+        return
+
+    # Store in Minio
+    file_name = os.path.basename(url)
+    file_content = response.content
+    temp_dir = tempfile.gettempdir()
+    file_path = os.path.join(temp_dir, file_name)
+
+    with open(file_path, 'wb') as file:
+        file.write(file_content)
+
+    try:
+        minio_client.fput_object(bucket_name, file_name, file_path)
+        print(f"Stored {file_name} in bucket {bucket_name}.")
+    except Exception as e:
+        print(f"Failed to store {file_name} in Minio: {str(e)}")
+        return
+
+    # Index in Weaviate
+    data_object = {
+        "content": file_content.decode("utf-8"),  # Assuming the content is text
+        "sourceUrl": url
+    }
+    try:
+        weaviate_client.data_object.create(data_object, "Articles")
+        print(f"Indexed content from {url}.")
+    except Exception as e:
+        print(f"Failed to index content from {url} in Weaviate: {str(e)}")
+
+@app.get("/")
+def read_root():
+    return {"Hello": "World"}
+
+@app.post("/execute/{bucket_name}/{script_name}")
+async def execute_script(bucket_name: str, script_name: str):
+    orchestrator = MinIOSystemOrchestrator(
+        MinIOConfig(endpoint="play.min.io:443", access_key="minioadmin", secret_key="minioadmin"),
+        DockerConfig(image="python:3.9-slim", command="", volumes={}, detach=True, remove=True)
+    )
+    container_name = await orchestrator.execute_script_in_docker(ScriptExecutionRequest(bucket_name=bucket_name, script_name=script_name))
+    return {"message": "Execution started", "container_name": container_name}
+
+# openai_api_key = os.getenv("OPENAI_API_KEY")
+# if openai_api_key is None:
+#   raise ValueError("OPENAI_API_KEY environment variable is not set.")
+
+# llm = ChatOpenAI(api_key=openai_api_key)
+#minio_tools = [create_bucket, upload_file, list_buckets, delete_file]
+tools = [create_bucket, upload_file, list_buckets, delete_file]
+memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+agent = initialize_agent(tools, llm, agent=AgentType.CONVERSATIONAL_REACT_DESCRIPTION, verbose=True, memory=memory,
+                         callbacks=[BaseCallbackManager()])
+                         
+from langchain.agents import create_structured_chat_agent, create_json_chat_agent
+# Initialization for tools, llm, and memory remains the same
+
+# Structured Chat Agent
+structured_chat_agent = create_structured_chat_agent(llm, tools, memory=memory, prompt=prompt, verbose=True)
+
+# JSON Chat Agent
+json_chat_agent = create_json_chat_agent(llm, tools, memory=memory, verbose=True)
+
+@app.post("/langchain-execute/")
+async def execute_langchain_integration(input: LangChainInput):
+    result = agent.run(input=input.input_text)
+    return {"message": "LangChain processing completed", "result": result}
+
+@app.post("/hydrate-data/")
+async def hydrate_data_endpoint(input: dict):
+    hydrate_data(input)
+    return {"message": "Data hydration completed"}
+
+@app.post("/agent-action/")
+async def execute_agent_action_endpoint(input: dict):
+    result = execute_agent_action(input)
+    return {"message": "Agent action executed", "result": result}
+
+@app.post("/minio-webhook/")
+async def handle_minio_webhook(event: dict):
+    event_name = event.get("EventName")
+    if event_name == "s3:ObjectCreated:Put":
+        pass
+    elif event_name == "s3:ObjectRemoved:Delete":
+        pass
+    return {"message": "Webhook event processed successfully"}
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)

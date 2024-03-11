@@ -1,0 +1,55 @@
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 10
+    reviewers:
+      - "your-github-username"
+    assignees:
+      - "your-github-username"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    target-branch: "main"
+    labels:
+      - "dependencies"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-patch"]
+    extend-update-types:
+      - name: "security"
+        security-severities:
+          - "CRITICAL"
+          - "HIGH"
+    remote-url: "http://your-fastapi-service-url/check-dependency"
+    api-key: "your-api-key"
+    insecure-external-code-execution: deny
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    reviewers:
+      - "your-github-username"
+    assignees:
+      - "your-github-username"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    target-branch: "main"
+    labels:
+      - "docker"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-patch"]
+    extend-update-types:
+      - name: "security"
+        security-severities:
+          - "CRITICAL"
+          - "HIGH"
+    remote-url: "http://your-fastapi-service-url/check-docker-image"
+    api-key: "your-api-key"
+    insecure-external-code-execution: deny
