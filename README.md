@@ -1,5 +1,7 @@
 # Cdaprod’s Local MinIO System Control and Central Application Layer Entrypoint
 
+[![Build and Push Docker Image to DockerHub and GCCR.io](https://github.com/Cdaprod/cda.minio-system-control/actions/workflows/build_and_push_images.yml/badge.svg)](https://github.com/Cdaprod/cda.minio-system-control/actions/workflows/build_and_push_images.yml)
+
 ## This is a Dynamic ETL and API Gateway written in Python
 
 Minio client
