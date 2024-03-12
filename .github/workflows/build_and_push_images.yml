@@ -38,3 +38,4 @@ jobs:
         tags: |
           cdaprod/cda-minio-control:latest
           ghcr.io/cdaprod/cda-minio-control:latest
+        platforms: linux/amd64,linux/arm64
