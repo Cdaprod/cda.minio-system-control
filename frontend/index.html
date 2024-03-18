@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI System Object Orchestrator</title>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+        }
+        h2 {
+            color: #666;
+            margin-top: 30px;
+        }
+        form {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input[type="text"], textarea {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-sizing: border-box;
+            margin-bottom: 10px;
+        }
+        input[type="submit"] {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        input[type="submit"]:hover {
+            background-color: #45a049;
+        }
+        .result {
+            padding: 10px;
+            background-color: #f2f2f2;
+            border-radius: 4px;
+            margin-top: 10px;
+        }
+    </style>
+    <script>
+        $(document).ready(function() {
+            // Data Hydration
+            $("#hydrate-form").submit(function(event) {
+                event.preventDefault();
+                var urls = $("#urls").val().split("\n");
+                var data = { urls: urls.map(url => ({ url })) };
+                $.ajax({
+                    url: "/hydrate-data/",
+                    type: "POST",
+                    data: JSON.stringify(data),
+                    contentType: "application/json",
+                    success: function(response) {
+                        $("#hydrate-result").text("Data hydration completed. Result: " + JSON.stringify(response.result));
+                    },
+                    error: function(xhr, status, error) {
+                        $("#hydrate-result").text("Error: " + error);
+                    }
+                });
+            });
+
+            // Script Execution
+            $("#script-form").submit(function(event) {
+                event.preventDefault();
+                var bucketName = $("#bucket-name").val();
+                var scriptName = $("#script-name").val();
+                $.ajax({
+                    url: "/execute/" + bucketName + "/" + scriptName,
+                    type: "POST",
+                    success: function(response) {
+                        $("#script-result").text("Script execution started. Container name: " + response.container_name);
+                    },
+                    error: function(xhr, status, error) {
+                        $("#script-result").text("Error: " + error);
+                    }
+                });
+            });
+
+            // LangChain Query
+            $("#langchain-form").submit(function(event) {
+                event.preventDefault();
+                var inputText = $("#input-text").val();
+                var data = { input_text: inputText };
+                $.ajax({
+                    url: "/langchain-execute/",
+                    type: "POST",
+                    data: JSON.stringify(data),
+                    contentType: "application/json",
+                    success: function(response) {
+                        $("#langchain-result").text("LangChain processing completed. Result: " + JSON.stringify(response.result));
+                    },
+                    error: function(xhr, status, error) {
+                        $("#langchain-result").text("Error: " + error);
+                    }
+                });
+            });
+
+            // Agent Action
+            $("#agent-form").submit(function(event) {
+                event.preventDefault();
+                var agentInput = $("#agent-input").val();
+                var data = JSON.parse(agentInput);
+                $.ajax({
+                    url: "/agent-action/",
+                    type: "POST",
+                    data: JSON.stringify(data),
+                    contentType: "application/json",
+                    success: function(response) {
+                        $("#agent-result").text("Agent action executed. Result: " + JSON.stringify(response.result));
+                    },
+                    error: function(xhr, status, error) {
+                        $("#agent-result").text("Error: " + error);
+                    }
+                });
+            });
+        });
+    </script>
+</head>
+<body>
+    <h1>MinIO  Weaviate System AI Orchestrator</h1>
+
+    <h2>Data Hydration</h2>
+    <form id="hydrate-form">
+        <label for="urls">Enter URLs (one per line):</label>
+        <textarea id="urls" rows="5"></textarea>
+        <input type="submit" value="Hydrate Data">
+    </form>
+    <div id="hydrate-result" class="result"></div>
+
+    <h2>Script Execution</h2>
+    <form id="script-form">
+        <label for="bucket-name">Bucket Name:</label>
+        <input type="text" id="bucket-name">
+        <label for="script-name">Script Name:</label>
+        <input type="text" id="script-name">
+        <input type="submit" value="Execute Script">
+    </form>
+    <div id="script-result" class="result"></div>
+
+    <h2>LangChain Query</h2>
+    <form id="langchain-form">
+        <label for="input-text">Enter Query:</label>
+        <textarea id="input-text" rows="3"></textarea>
+        <input type="submit" value="Execute Query">
+    </form>
+    <div id="langchain-result" class="result"></div>
+
+    <h2>Agent Action</h2>
+    <form id="agent-form">
+        <label for="agent-input">Enter Agent Input (JSON):</label>
+        <textarea id="agent-input" rows="5"></textarea>
+        <input type="submit" value="Execute Agent Action">
+    </form>
+    <div id="agent-result" class="result"></div>
+</body>
+</html>

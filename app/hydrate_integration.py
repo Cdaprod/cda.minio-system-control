@@ -7,7 +7,7 @@ import tempfile
 import io
 
 class ClientConfig(BaseModel):
-    minio_endpoint: str = "play.min.io:9000"
+    minio_endpoint: str = "play.min.io:443"
     minio_access_key: str = "minioadmin"
     minio_secret_key: str = "minioadmin"
     weaviate_endpoint: str = "http://localhost:8080"
