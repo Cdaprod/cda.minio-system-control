@@ -1,8 +1,9 @@
-# Cdaprod’s Local MinIO System Control and Central Application Layer Entrypoint
+# Cdaprod’s Local MinIO System Control API
+#### Entrypoint for Centralized (API) Application Layer 
 
 [![Build and Push Docker Image to DockerHub and GCCR.io](https://github.com/Cdaprod/cda.minio-system-control/actions/workflows/build_and_push_images.yml/badge.svg)](https://github.com/Cdaprod/cda.minio-system-control/actions/workflows/build_and_push_images.yml)
 
-## This is a Dynamic ETL and API Gateway written in Python
+This is a Dynamic ETL/API Layer is to facilitate the integration of AI Agents with MinIO in a scalable and containerized approach, enabling the control and management of logic through the MinIO SDK, enhancing data handling and operations capabilities. 
 
 Minio client
 Weaviate client
