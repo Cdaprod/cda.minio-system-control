@@ -4,6 +4,7 @@ import re
 import io
 import tempfile
 import uuid
+import docker
 from typing import List
 from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, HTTPException
